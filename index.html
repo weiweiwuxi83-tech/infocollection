@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>巨潮资讯 · 投资者关系活动搜索与合并下载</title>
+<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+<style>
+  :root{ --blue:#2563eb; --border:#e2e5ea; --muted:#8a909a; }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#f7f8fa;color:#1f2329;}
+  .wrap{max-width:960px;margin:0 auto;padding:24px 16px 80px;}
+  h1{font-size:20px;font-weight:700;margin-bottom:16px;}
+  .card{background:#fff;border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:12px;}
+  .row{display:flex;gap:10px;flex-wrap:wrap;}
+  .row + .row{margin-top:10px;}
+  input,select,button{font-size:14px;border-radius:8px;border:1px solid var(--border);padding:9px 12px;background:#fff;}
+  input:focus,select:focus{outline:2px solid rgba(37,99,235,.25);border-color:var(--blue);}
+  .grow{flex:1;min-width:180px;}
+  .btn{background:var(--blue);color:#fff;border-color:var(--blue);cursor:pointer;}
+  .btn:disabled{opacity:.55;cursor:not-allowed;}
+  .btn.secondary{background:#fff;color:var(--blue);}
+  .meta{font-size:13px;color:var(--muted);margin:10px 4px;}
+  .result{display:block;background:#fff;border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:8px;cursor:pointer;transition:border-color .15s;}
+  .result:hover{border-color:var(--blue);}
+  .result.checked{border-color:var(--blue);background:#f5f9ff;}
+  .result .title{font-size:15px;color:#1d4ed8;word-break:break-all;}
+  .result .sub{font-size:13px;color:var(--muted);margin-top:5px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;}
+  .toolbar{position:sticky;bottom:0;background:#fff;border-top:1px solid var(--border);padding:10px 4px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px;}
+  .status{font-size:13px;color:var(--muted);}
+  .pager{display:flex;gap:8px;align-items:center;justify-content:center;margin-top:14px;}
+  label.small{font-size:13px;color:var(--muted);display:flex;align-items:center;gap:6px;}
+  a.dl{color:var(--blue);text-decoration:none;margin-left:8px;font-size:13px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>巨潮资讯 · 简易搜索（增强版：勾选合并下载 TXT / PDF）</h1>
+
+  <div class="card">
+    <div class="row">
+      <input id="kw" class="grow" placeholder="关键词，如：立讯精密（可留空）">
+      <input id="code" style="width:220px" placeholder="标的：代码或简称，如 002475（可留空）">
+    </div>
+    <div class="row">
+      <label class="small">开始日期 <input type="date" id="sdate"></label>
+      <label class="small">结束日期 <input type="date" id="edate"></label>
+      <select id="category">
+        <option value="">全部类别</option>
+        <option value="category_investor_relations" selected>投资者关系活动</option>
+      </select>
+      <select id="plate">
+        <option value="">全部板块</option>
+        <option value="sz">深交所</option>
+        <option value="sh">上交所</option>
+        <option value="bj">北交所</option>
+      </select>
+      <button class="btn" id="searchBtn">搜索</button>
+    </div>
+    <div class="row">
+      <label class="small"><input type="checkbox" id="useProxy" checked> 使用 CORS 代理（GitHub Pages 部署时建议勾选；本地运行可取消）</label>
+      <input id="proxyUrl" class="grow" value="https://api.allorigins.win/raw?url=">
+    </div>
+  </div>
+
+  <div class="meta" id="meta">输入条件后点击搜索。</div>
+  <div id="results"></div>
+
+  <div class="toolbar">
+    <label class="small"><input type="checkbox" id="checkAll"> 全选本页</label>
+    <span class="status" id="selInfo">已选 0 条</span>
+    <span style="flex:1"></span>
+    <button class="btn secondary" id="dlTxt" disabled>合并下载 TXT</button>
+    <button class="btn" id="dlPdf" disabled>合并下载 PDF</button>
+  </div>
+
+  <div class="pager">
+    <button class="btn secondary" id="prev" disabled>上一页</button>
+    <span class="status" id="pageInfo"></span>
+    <button class="btn secondary" id="next" disabled>下一页</button>
+  </div>
+</div>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
+
+const API = "http://www.cninfo.com.cn/new/fulltextSearch/full";
+const PAGE_SIZE = 30;
+let state = { page: 1, total: 0, list: [], selected: new Set() };
+
+const $ = id => document.getElementById(id);
+
+/* ---------- 请求（带 CORS 代理回退） ---------- */
+async function fetchJson(url) {
+  const useProxy = $("useProxy").checked;
+  if (useProxy) url = $("proxyUrl").value + encodeURIComponent(url);
+  const r = await fetch(url, { headers: { "Accept": "application/json" } });
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+async function fetchBuf(url) {
+  const useProxy = $("useProxy").checked;
+  if (useProxy) url = $("proxyUrl").value + encodeURIComponent(url);
+  const r = await fetch(url);
+  if (!r.ok) throw new Error("下载失败 HTTP " + r.status);
+  return r.arrayBuffer();
+}
+
+function buildUrl() {
+  const p = new URLSearchParams({
+    searchkey: $("code").value.trim(),
+    sdate: $("sdate").value, edate: $("edate").value,
+    isfulltext: "false", sortName: "pubdate", sortType: "desc",
+    pageNum: state.page
+  });
+  const cat = $("category").value;
+  if (cat) p.set("category", cat);
+  const plate = $("plate").value;
+  if (plate) p.set("plate", plate);
+  const kw = $("kw").value.trim();
+  if (kw && !$("code").value.trim()) p.set("searchkey", kw);
+  return API + "?" + p.toString();
+}
+
+/* ---------- 搜索 ---------- */
+async function doSearch(page = 1) {
+  state.page = page;
+  $("meta").textContent = "搜索中……";
+  $("results").innerHTML = "";
+  try {
+    const data = await fetchJson(buildUrl());
+    state.total = data.totalAnnouncement || 0;
+    state.list = data.announcements || [];
+    state.selected.clear();
+    render();
+  } catch (e) {
+    $("meta").textContent = "请求失败：" + e.message + "（可检查代理设置，或本地运行）";
+  }
+}
+
+function fmtTime(t) {
+  const d = new Date(t);
+  return d.toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" }).replace(/\//g, "-");
+}
+
+function render() {
+  $("meta").textContent = `共 ${state.total} 条结果`;
+  const box = $("results");
+  box.innerHTML = "";
+  state.list.forEach((a, i) => {
+    const id = a.announcementId;
+    const url = "http://static.cninfo.com.cn/" + a.adjunctUrl;
+    const div = document.createElement("div");
+    div.className = "result";
+    div.innerHTML = `
+      <label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer">
+        <input type="checkbox" data-id="${id}" ${state.selected.has(id) ? "checked" : ""} style="margin-top:3px">
+        <span style="flex:1">
+          <span class="title">${a.announcementTitle}</span>
+          <span class="sub"><span>${a.secName} (${a.secCode}) · ${fmtTime(a.announcementTime)}</span>
+          <span><a class="dl" href="${url}" target="_blank" rel="noopener">原文</a></span></span>
+        </span>
+      </label>`;
+    div.querySelector("a.dl").addEventListener("click", e => e.stopPropagation());
+    div.querySelector("input[type=checkbox]").addEventListener("change", e => {
+      e.target.checked ? state.selected.add(id) : state.selected.delete(id);
+      div.classList.toggle("checked", e.target.checked);
+      updateSel();
+    });
+    box.appendChild(div);
+  });
+  const pages = Math.max(1, Math.ceil(state.total / PAGE_SIZE));
+  $("pageInfo").textContent = `第 ${state.page} / ${pages} 页`;
+  $("prev").disabled = state.page <= 1;
+  $("next").disabled = state.page >= pages;
+  $("checkAll").checked = false;
+  updateSel();
+}
+
+function updateSel() {
+  $("selInfo").textContent = `已选 ${state.selected.size} 条`;
+  $("dlTxt").disabled = $("dlPdf").disabled = state.selected.size === 0;
+}
+
+function selectedItems() {
+  return state.list.filter(a => state.selected.has(a.announcementId));
+}
+
+/* ---------- 下载 ---------- */
+function saveBlob(blob, name) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+async function downloadPdfs(items, onProgress) {
+  const out = [];
+  for (let i = 0; i < items.length; i++) {
+    onProgress(`下载 PDF ${i + 1}/${items.length}：${items[i].announcementTitle}`);
+    const buf = await fetchBuf("http://static.cninfo.com.cn/" + items[i].adjunctUrl);
+    out.push(buf);
+  }
+  return out;
+}
+
+async function mergePdf(items) {
+  const { PDFDocument } = PDFLib;
+  const merged = await PDFDocument.create();
+  const bufs = await downloadPdfs(items, m => $("meta").textContent = m);
+  for (let i = 0; i < bufs.length; i++) {
+    $("meta").textContent = `合并第 ${i + 1}/${bufs.length} 个文件……`;
+    const src = await PDFDocument.load(bufs[i], { ignoreEncryption: true });
+    const pages = await merged.copyPages(src, src.getPageIndices());
+    pages.forEach(p => merged.addPage(p));
+  }
+  const bytes = await merged.save();
+  saveBlob(new Blob([bytes], { type: "application/pdf" }), "合并公告.pdf");
+  $("meta").textContent = `完成：已合并 ${items.length} 个文件`;
+}
+
+async function mergeTxt(items) {
+  const bufs = await downloadPdfs(items, m => $("meta").textContent = m);
+  let text = "";
+  for (let i = 0; i < bufs.length; i++) {
+    $("meta").textContent = `提取文本 ${i + 1}/${bufs.length}……`;
+    const pdf = await pdfjsLib.getDocument({ data: bufs[i].slice(0) }).promise;
+    text += `========== ${i + 1}. ${items[i].announcementTitle} ==========\n`;
+    text += `(${items[i].secName} ${items[i].secCode} · ${fmtTime(items[i].announcementTime)})\n\n`;
+    for (let p = 1; p <= pdf.numPages; p++) {
+      const page = await pdf.getPage(p);
+      const content = await page.getTextContent();
+      text += content.items.map(it => it.str).join(" ") + "\n";
+    }
+    text += "\n\n";
+  }
+  saveBlob(new Blob([text], { type: "text/plain;charset=utf-8" }), "合并公告.txt");
+  $("meta").textContent = `完成：已合并 ${items.length} 个文件`;
+}
+
+/* ---------- 事件 ---------- */
+$("searchBtn").onclick = () => doSearch(1);
+$("prev").onclick = () => doSearch(state.page - 1);
+$("next").onclick = () => doSearch(state.page + 1);
+["kw", "code", "sdate", "edate"].forEach(id => $(id).addEventListener("keydown", e => { if (e.key === "Enter") doSearch(1); }));
+$("checkAll").onchange = e => {
+  document.querySelectorAll('#results input[type=checkbox]').forEach(cb => {
+    cb.checked = e.target.checked;
+    cb.dispatchEvent(new Event("change"));
+  });
+};
+$("dlPdf").onclick = () => mergePdf(selectedItems()).catch(e => $("meta").textContent = "PDF 合并失败：" + e.message);
+$("dlTxt").onclick = () => mergeTxt(selectedItems()).catch(e => $("meta").textContent = "TXT 生成失败：" + e.message);
+</script>
+</body>
+</html>
